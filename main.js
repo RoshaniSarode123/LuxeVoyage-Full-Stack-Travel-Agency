@@ -1,82 +1,125 @@
-// Initialize AOS Animation
-document.addEventListener('DOMContentLoaded', () => {
-    // Remove preloader
-    setTimeout(() => {
-        const preloader = document.getElementById('preloader');
-        if (preloader) {
-            preloader.style.opacity = '0';
-            setTimeout(() => {
-                preloader.style.display = 'none';
-            }, 500);
-        }
-    }, 1500);
+'use strict';
 
-    AOS.init({
-        once: true,
-        offset: 100,
-        duration: 800,
-        easing: 'ease-out-cubic',
-    });
+/**
+ * Set the title.
+ */
 
-    // Navbar scroll effect
-    const navbar = document.getElementById('navbar');
-    window.addEventListener('scroll', () => {
-        if (window.scrollY > 50) {
-            navbar.classList.remove('bg-transparent', 'py-4');
-            navbar.classList.add('bg-white/95', 'dark:bg-brand-dark/95', 'backdrop-blur-md', 'shadow-md', 'py-3');
-            // Change text color on scroll if not dark mode
-            if (!document.documentElement.classList.contains('dark')) {
-                navbar.querySelectorAll('.text-white:not(.bg-brand-gold)').forEach(el => {
-                    el.classList.remove('text-white');
-                    el.classList.add('text-gray-800');
-                });
-            }
-        } else {
-            navbar.classList.add('bg-transparent', 'py-4');
-            navbar.classList.remove('bg-white/95', 'dark:bg-brand-dark/95', 'backdrop-blur-md', 'shadow-md', 'py-3');
-            // Revert text color
-            if (!document.documentElement.classList.contains('dark')) {
-                navbar.querySelectorAll('.text-gray-800').forEach(el => {
-                    el.classList.add('text-white');
-                    el.classList.remove('text-gray-800');
-                });
-            }
-        }
-    });
+process.title = 'node-pre-gyp';
 
-    // Mobile Menu Toggle
-    const mobileBtn = document.getElementById('mobile-menu-btn');
-    const mobileMenu = document.getElementById('mobile-menu');
-    
-    if (mobileBtn && mobileMenu) {
-        mobileBtn.addEventListener('click', () => {
-            mobileMenu.classList.toggle('hidden');
-        });
+const node_pre_gyp = require('../');
+const log = require('npmlog');
+
+/**
+ * Process and execute the selected commands.
+ */
+
+const prog = new node_pre_gyp.Run({ argv: process.argv });
+let completed = false;
+
+if (prog.todo.length === 0) {
+  if (~process.argv.indexOf('-v') || ~process.argv.indexOf('--version')) {
+    console.log('v%s', prog.version);
+    process.exit(0);
+  } else if (~process.argv.indexOf('-h') || ~process.argv.indexOf('--help')) {
+    console.log('%s', prog.usage());
+    process.exit(0);
+  }
+  console.log('%s', prog.usage());
+  process.exit(1);
+}
+
+// if --no-color is passed
+if (prog.opts && Object.hasOwnProperty.call(prog, 'color') && !prog.opts.color) {
+  log.disableColor();
+}
+
+log.info('it worked if it ends with', 'ok');
+log.verbose('cli', process.argv);
+log.info('using', process.title + '@%s', prog.version);
+log.info('using', 'node@%s | %s | %s', process.versions.node, process.platform, process.arch);
+
+
+/**
+ * Change dir if -C/--directory was passed.
+ */
+
+const dir = prog.opts.directory;
+if (dir) {
+  const fs = require('fs');
+  try {
+    const stat = fs.statSync(dir);
+    if (stat.isDirectory()) {
+      log.info('chdir', dir);
+      process.chdir(dir);
+    } else {
+      log.warn('chdir', dir + ' is not a directory');
     }
-
-    // Dark Mode Toggle
-    const themeToggle = document.getElementById('theme-toggle');
-    if (themeToggle) {
-        themeToggle.addEventListener('click', () => {
-            document.documentElement.classList.toggle('dark');
-            const isDark = document.documentElement.classList.contains('dark');
-            localStorage.setItem('theme', isDark ? 'dark' : 'light');
-            
-            // Update icon
-            const icon = themeToggle.querySelector('i');
-            if (isDark) {
-                icon.classList.remove('fa-moon');
-                icon.classList.add('fa-sun');
-            } else {
-                icon.classList.remove('fa-sun');
-                icon.classList.add('fa-moon');
-            }
-        });
-
-        // Check local storage for theme
-        if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            document.documentElement.classList.add('dark');
-            themeToggle.querySelector('i').classList.replace('fa-moon', 'fa-sun');
-        }
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      log.warn('chdir', dir + ' is not a directory');
+    } else {
+      log.warn('chdir', 'error during chdir() "%s"', e.message);
     }
+  }
+}
+
+function run() {
+  const command = prog.todo.shift();
+  if (!command) {
+    // done!
+    completed = true;
+    log.info('ok');
+    return;
+  }
+
+  // set binary.host when appropriate. host determines the s3 target bucket.
+  const target = prog.setBinaryHostProperty(command.name);
+  if (target && ['install', 'publish', 'unpublish', 'info'].indexOf(command.name) >= 0) {
+    log.info('using binary.host: ' + prog.package_json.binary.host);
+  }
+
+  prog.commands[command.name](command.args, function(err) {
+    if (err) {
+      log.error(command.name + ' error');
+      log.error('stack', err.stack);
+      errorMessage();
+      log.error('not ok');
+      console.log(err.message);
+      return process.exit(1);
+    }
+    const args_array = [].slice.call(arguments, 1);
+    if (args_array.length) {
+      console.log.apply(console, args_array);
+    }
+    // now run the next command in the queue
+    process.nextTick(run);
+  });
+}
+
+process.on('exit', (code) => {
+  if (!completed && !code) {
+    log.error('Completion callback never invoked!');
+    errorMessage();
+    process.exit(6);
+  }
 });
+
+process.on('uncaughtException', (err) => {
+  log.error('UNCAUGHT EXCEPTION');
+  log.error('stack', err.stack);
+  errorMessage();
+  process.exit(7);
+});
+
+function errorMessage() {
+  // copied from npm's lib/util/error-handler.js
+  const os = require('os');
+  log.error('System', os.type() + ' ' + os.release());
+  log.error('command', process.argv.map(JSON.stringify).join(' '));
+  log.error('cwd', process.cwd());
+  log.error('node -v', process.version);
+  log.error(process.title + ' -v', 'v' + prog.package.version);
+}
+
+// start running the given commands!
+run();
